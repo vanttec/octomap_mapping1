@@ -28,10 +28,46 @@
  */
 
 #include <octomap_server/OctomapServer.h>
+#include <typeinfo>
+#include <string>
+#include <fstream>
+#include <vector>
+#include <utility> // std::pair
 
+void write_csv(std::string filename, std::vector<std::pair<std::string, std::vector<double>>> dataset){
+    // Make a CSV file with one or more columns of integer values
+    // Each column of data is represented by the pair <column name, column data>
+    //   as std::pair<std::string, std::vector<int>>
+    // The dataset is represented as a vector of these columns
+    // Note that all columns should be the same size
+    
+    // Create an output filestream object
+    std::ofstream myFile(filename);
+    
+    // Send column names to the stream
+    for(int j = 0; j < dataset.size(); ++j)
+    {
+        myFile << dataset.at(j).first;
+        if(j != dataset.size() - 1) myFile << ","; // No comma at end of line
+    }
+    myFile << "\n";
+    
+    // Send data to the stream
+    for(int i = 0; i < dataset.at(0).second.size(); ++i)
+    {
+        for(int j = 0; j < dataset.size(); ++j)
+        {
+            myFile << dataset.at(j).second.at(i);
+            if(j != dataset.size() - 1) myFile << ","; // No comma at end of line
+        }
+        myFile << "\n";
+    }
+    
+    // Close the file
+    myFile.close();
+}
 using namespace octomap;
 using octomap_msgs::Octomap;
-
 bool is_equal (double a, double b, double epsilon = 1.0e-7)
 {
     return std::abs(a - b) < epsilon;
@@ -48,7 +84,8 @@ OctomapServer::OctomapServer(const ros::NodeHandle private_nh_, const ros::NodeH
   m_octree(NULL),
   m_maxRange(-1.0),
   m_minRange(-1.0),
-  m_worldFrameId("/map"), m_baseFrameId("base_footprint"),
+  //m_worldFrameId("/map"), m_baseFrameId("base_footprint"),
+  m_worldFrameId("/world_ned"), m_baseFrameId("vtec_u3_base_link"),
   m_useHeightMap(true),
   m_useColoredMap(false),
   m_colorFactor(0.8),
@@ -176,7 +213,7 @@ OctomapServer::OctomapServer(const ros::NodeHandle private_nh_, const ros::NodeH
 
   m_pointCloudSub = new message_filters::Subscriber<sensor_msgs::PointCloud2> (m_nh, "cloud_in", 5);
   m_tfPointCloudSub = new tf::MessageFilter<sensor_msgs::PointCloud2> (*m_pointCloudSub, m_tfListener, m_worldFrameId, 5);
-  m_tfPointCloudSub->registerCallback(boost::bind(&OctomapServer::insertCloudCallback, this, boost::placeholders::_1));
+  m_tfPointCloudSub->registerCallback(boost::bind(&OctomapServer::insertCloudCallback, this, _1));
 
   m_octomapBinaryService = m_nh.advertiseService("octomap_binary", &OctomapServer::octomapBinarySrv, this);
   m_octomapFullService = m_nh.advertiseService("octomap_full", &OctomapServer::octomapFullSrv, this);
@@ -184,8 +221,24 @@ OctomapServer::OctomapServer(const ros::NodeHandle private_nh_, const ros::NodeH
   m_resetService = m_nh_private.advertiseService("reset", &OctomapServer::resetSrv, this);
 
   dynamic_reconfigure::Server<OctomapServerConfig>::CallbackType f;
-  f = boost::bind(&OctomapServer::reconfigureCallback, this, boost::placeholders::_1, boost::placeholders::_2);
+  f = boost::bind(&OctomapServer::reconfigureCallback, this, _1, _2);
   m_reconfigureServer.setCallback(f);
+
+  //Sub to enable pcl
+  m_enablepcl = m_nh.subscribe("enablepcl", 1,
+                                      &OctomapServer::enablepclCallback, this);
+  m_oldclusters = m_nh.subscribe("oldclusters", 1,
+        &OctomapServer::oldclustersCallback, this);
+  //Sub to take actual list and update it
+  //m_pointlistsub = m_nh.subscribe("/octomap/point_list", 1, &OctomapServer::pointListCallback, this);
+  //Pub to pass vector info of located obstacles
+  pointlist_pub = m_nh.advertise<octomap_server::points_list>("/octomap/point_list", 1);
+  arrayocto_pub = m_nh.advertise<std_msgs::Int16>("/arraylengthocto",1);
+  readyforcluster_pub = m_nh.advertise<std_msgs::String>("/readyforcluster", 1);
+  //Subscriber odometry
+  m_odometry = m_nh.subscribe("/uuv_simulation/dynamic_model/pose", 1,
+                                      &OctomapServer::ins_pose_callback, this);
+  m_updateposition = m_nh.subscribe("/updateposition",1,&OctomapServer::keep_position_callback,this);
 }
 
 OctomapServer::~OctomapServer(){
@@ -206,6 +259,56 @@ OctomapServer::~OctomapServer(){
   }
 
 }
+void OctomapServer::enablepclCallback(const std_msgs::String::ConstPtr& msg){
+  if (v_enablepcl!=msg->data && v_enablepcl!=""){
+    writepcl++;
+    ROS_WARN("CHANGE"); 
+    v_pointList.points.clear();
+  }
+
+  v_enablepcl = msg->data;
+  
+}
+void OctomapServer::oldclustersCallback(const octomap_server::points_list& msg){
+    for (int i = 0; i < msg.points.size(); i++)
+    {
+      std::vector<double> mycluster={msg.points[i].x,msg.points[i].y,msg.points[i].z};
+      oldclusters.push_back(mycluster);
+    }
+}
+
+void OctomapServer::ins_pose_callback(const geometry_msgs::Pose::ConstPtr& msg ){
+  ned_x=msg->position.x;
+  ned_y=msg->position.y;
+  ned_z=msg->position.z;
+  yaw = msg->orientation.z;
+  if(update_position){
+    new_ned_y= msg->position.y;
+    update_position=false;
+  }
+  
+}
+void OctomapServer::keep_position_callback(const std_msgs::String::ConstPtr& msg ){
+
+    if (main_positiony!=msg->data && msg->data=="Activate"){
+    ROS_WARN("CHANGE position"); 
+    update_position=true;
+    }
+    main_positiony=msg->data;
+}
+/*void OctomapServer::pointListCallback(const octomap_server::point_detected_list::ConstPtr& msg){
+
+
+  ROS_WARN("Pointlist debug");
+  
+  for (int i = 0; i < msg->len; i++)
+  {
+  ROS_WARN("%f",msg->objects[i].x);    
+  }
+  //ROS_WARN("Pointlist debug2");
+  //ROS_WARN("%f",v_pointList.points[0].x);
+  
+}*/
 
 bool OctomapServer::openFile(const std::string& filename){
   if (filename.length() <= 3)
@@ -344,14 +447,17 @@ void OctomapServer::insertCloudCallback(const sensor_msgs::PointCloud2::ConstPtr
     pc_ground.header = pc.header;
     pc_nonground.header = pc.header;
   }
-
-
+ROS_DEBUG("NOTWorking");
+ if(v_enablepcl != "" && v_enablepcl != "Deactivate" ){
+   ROS_DEBUG("Working");
   insertScan(sensorToWorldTf.getOrigin(), pc_ground, pc_nonground);
 
   double total_elapsed = (ros::WallTime::now() - startTime).toSec();
   ROS_DEBUG("Pointcloud insertion in OctomapServer done (%zu+%zu pts (ground/nonground), %f sec)", pc_ground.size(), pc_nonground.size(), total_elapsed);
 
   publishAll(cloud->header.stamp);
+  }
+  
 }
 
 void OctomapServer::insertScan(const tf::Point& sensorOriginTf, const PCLPointCloud& ground, const PCLPointCloud& nonground){
@@ -366,11 +472,17 @@ void OctomapServer::insertScan(const tf::Point& sensorOriginTf, const PCLPointCl
 #ifdef COLOR_OCTOMAP_SERVER
   unsigned char* colors = new unsigned char[3];
 #endif
-
+  float distance=0.0;
+  float angle=0.0;
+  float cuadrante=0.0;
+  float pointx_ned=0.0;
+  float pointy_ned=0.0;
+  float pointz_ned=0.0;
   // instead of direct scan insertion, compute update to filter ground:
   KeySet free_cells, occupied_cells;
   // insert ground points only as free:
   for (PCLPointCloud::const_iterator it = ground.begin(); it != ground.end(); ++it){
+
     point3d point(it->x, it->y, it->z);
 
     if ((m_minRange > 0) && (point - sensorOrigin).norm() < m_minRange) continue;
@@ -395,11 +507,92 @@ void OctomapServer::insertScan(const tf::Point& sensorOriginTf, const PCLPointCl
   }
 
   // all other points: free on ray, occupied on endpoint:
+
+  int count=0;
+  int prev_x=0;
+  int prev_y=0;
+  int prev_z=0;
+  int prev_distance=0;
+  int distance_threshold=1.5;
+  //vecx.clear();
+  //vecy.clear();
+  //vecz.clear();
   for (PCLPointCloud::const_iterator it = nonground.begin(); it != nonground.end(); ++it){
-    point3d point(it->x, it->y, it->z);
+    //Convert pointcloud to ned (Simulation gazebo)
+    //float pointcloud_angle_body = atan2(it->y, it->x);
+    //Pointcloud to body
+        // Eigen::Vector2d u;
+        // u << it->x,
+        //     it->y;
+        // Eigen::Matrix2d J;
+        // J<<cos(pointcloud_angle_body),-1*sin(pointcloud_angle_body),
+        //   sin(pointcloud_angle_body),cos(pointcloud_angle_body);
+        // Eigen::MatrixXd rot = J * u;
+        // float pointx_ned= rot.coeff(0.0) + it->x;
+        // float pointy_ned= rot.coeff(1.0) + it->y;
+        
+
+    // Body to ned
+    Eigen::Vector2d u;
+      //  float distance = pow(pow(it->x,2),pow(it->y,2),0.5);
+        u << it->x,
+             it->y;
+        Eigen::Matrix2d J;
+        J<<cos(1.30318*yaw),-1*sin(1.30318*yaw),
+          sin(1.30318*yaw),cos(1.30318*yaw);
+        Eigen::MatrixXd rot = J * u;
+        pointx_ned= rot.coeff(0.0) ;
+        pointy_ned= -(rot.coeff(1.0) + ned_y*2-new_ned_y);
+        pointz_ned=it->z+ned_z;
+    // distance = pow(pow(it->x,2)+pow(it->y,2),0.5);
+    angle=yaw;
+    // cuadrante=0.0;
+    // if(yaw<0){
+    //   //3
+    //   if (yaw>abs(M_PI/2)){
+    //     cuadrante=3.0;
+    //     angle = -(yaw-M_PI/2);
+    //   }
+    //   //2
+    //   else{
+    //     cuadrante=2.0;
+    //     angle= -yaw+M_PI/2;
+    //   }
+    // }  
+    // else{
+    //   //1
+    //   if(yaw>abs(M_PI/2)){
+    //     cuadrante=1.0;
+    //     angle = M_PI/2-yaw;
+    //   }
+    //   //4
+    //   else{
+    //     cuadrante=4.0;
+    //     angle = yaw-M_PI/2;
+    //   }
+    // } 
     
+    // pointx_ned =distance*sin(angle)+ned_x;
+    // pointy_ned= distance*cos(angle)+ned_y;
+    
+  
+    //ROS_WARN("We have data x=%f y y=%f  por %f en %f ",pointx_ned,pointy_ned,angle*180/M_PI,cuadrante);
+    if(count >1000){
+      count=0;
+      prev_distance = std::sqrt(std::pow((pointx_ned - prev_x), 2) + std::pow((pointy_ned - prev_y), 2));
+
+      if(prev_distance>distance_threshold){
+        prev_x=pointx_ned;
+        prev_y=pointy_ned;
+        prev_z=pointz_ned;
+        
+    point3d point(pointx_ned, pointy_ned, pointz_ned);
+    //ROS_WARN("Maxrange = %f",m_maxRange);
+    //ROS_WARN("point = %f",point);
+    //ROS_WARN("sensororigin= %f",sensorOrigin);
+    //ROS_WARN("norm = %f",(point-sensorOrigin).norm());
     if ((m_minRange > 0) && (point - sensorOrigin).norm() < m_minRange) continue;
-    
+
     // maxrange check
     if ((m_maxRange < 0.0) || ((point - sensorOrigin).norm() <= m_maxRange) ) {
 
@@ -411,12 +604,52 @@ void OctomapServer::insertScan(const tf::Point& sensorOriginTf, const PCLPointCl
       OcTreeKey key;
       if (m_octree->coordToKeyChecked(point, key)){
         occupied_cells.insert(key);
+        //mymark2
+        obs.x =pointx_ned;
+        obs.y = pointy_ned;
+        obs.z = pointz_ned;
+        //ROS_WARN("We have dataocto x = %f y y= %f, con %f",it->x,it->y,angle*180/M_PI);
+        //ROS_WARN("We have newdata x = %f y y= %f, con %f , ojo con ned=%f y newned=%f y por si %f",pointx_ned,pointy_ned,angle*180/M_PI,ned_y*2,new_ned_y,rot.coeff(1.0));
+        //ROS_WARN("%f",obs.z);
+        int oldclustersize=oldclusters.size();
+        ROS_WARN("Clustersssssssssssssssssssssssssss Sizedddd");
+        ROS_WARN("%d",oldclustersize);
 
-        updateMinKey(key, m_updateBBXMin);
-        updateMaxKey(key, m_updateBBXMax);
+        if(oldclustersize>0){
+            for (int i = 0; i < oldclustersize; i++)
+            {
+              float _eucdistance=pow(pointx_ned-oldclusters[i][0],2)/3+pow(pointy_ned-oldclusters[i][1],2)/8;
+              ROS_WARN("Distancia");
+              ROS_WARN("%d",_eucdistance);
+              ROS_WARN("%d",oldclusters[i][0]);
+              ROS_WARN("%d",pointx_ned);
+              if (_eucdistance>1)
+              {
+                index++;
+                v_pointList.points.push_back(obs);
+                v_pointList.lenpoints=index;
+                vecx.push_back((double)pointx_ned);
+                vecy.push_back((double)pointy_ned);
+                vecz.push_back((double)pointz_ned);
+                updateMinKey(key, m_updateBBXMin);
+                updateMaxKey(key, m_updateBBXMax);
+              }
+              
+            }
+            
+        }else{
+          index++;
+          v_pointList.points.push_back(obs);
+          v_pointList.lenpoints=index;
+          vecx.push_back((double)pointx_ned);
+          vecy.push_back((double)pointy_ned);
+          vecz.push_back((double)pointz_ned);
+          updateMinKey(key, m_updateBBXMin);
+          updateMaxKey(key, m_updateBBXMax);
+        }
 
 #ifdef COLOR_OCTOMAP_SERVER // NB: Only read and interpret color if it's an occupied node
-        m_octree->averageNodeColor(it->x, it->y, it->z, /*r=*/it->r, /*g=*/it->g, /*b=*/it->b);
+        m_octree->averageNodeColor(pointx_ned, pointy_ned, it->z, /*r=*/it->r, /*g=*/it->g, /*b=*/it->b);
 #endif
       }
     } else {// ray longer than maxrange:;
@@ -435,7 +668,45 @@ void OctomapServer::insertScan(const tf::Point& sensorOriginTf, const PCLPointCl
 
 
       }
+    }   
+    
+    }}else{
+      count++;
     }
+  }
+  // now mark all occupied cells:
+  for (KeySet::iterator it = occupied_cells.begin(), end=occupied_cells.end(); it!= end; it++) {
+    m_octree->updateNode(*it, true);
+    //mimark
+  }
+
+  //pointlist_pub.publish(v_pointList);
+  //ROS_WARN("%d",writepcl);
+  int time =(int)(ros::Time::now().toSec())-prevTime;
+  if(time>3 && writepcl ||firsttime){
+    prevTime=(int)(ros::Time::now().toSec());
+    ROS_WARN("Habemus CSV");
+    int prev_size_vecx = (int)(vecx.size());
+    ROS_WARN("%d",prev_size_vecx);
+    ros::Duration(0.2).sleep();
+    int new_size_vecx = (int)(vecx.size());
+    //ROS_WARN("%d",oldclusters);
+
+    std_msgs::Int16 mysize;
+    mysize.data=(int)(vecx.size());
+
+    arrayocto_pub.publish(mysize);
+    // Wrap into a vector
+    std::vector<std::pair<std::string, std::vector<double>>> vals = {{"X", vecx}, {"Y", vecy}, {"Z", vecz}};
+    // Write the vector to CSV
+    write_csv("/ws/src/octomap_mapping/octomap_server/scripts/inputpointclouds.csv", vals);
+    firsttime=false;
+    writepcl=0;
+    
+
+    vecx.clear();
+    vecy.clear();
+    vecz.clear();
   }
 
   // mark free cells only if not seen occupied in this cloud
@@ -445,10 +716,6 @@ void OctomapServer::insertScan(const tf::Point& sensorOriginTf, const PCLPointCl
     }
   }
 
-  // now mark all occupied cells:
-  for (KeySet::iterator it = occupied_cells.begin(), end=occupied_cells.end(); it!= end; it++) {
-    m_octree->updateNode(*it, true);
-  }
 
   // TODO: eval lazy+updateInner vs. proper insertion
   // non-lazy by default (updateInnerOccupancy() too slow for large maps)
@@ -502,7 +769,8 @@ void OctomapServer::publishAll(const ros::Time& rostime){
     ROS_WARN("Nothing to publish, octree is empty");
     return;
   }
-
+ 
+  //ROS_WARN("There is info");
   bool publishFreeMarkerArray = m_publishFreeSpace && (m_latchedTopics || m_fmarkerPub.getNumSubscribers() > 0);
   bool publishMarkerArray = (m_latchedTopics || m_markerPub.getNumSubscribers() > 0);
   bool publishPointCloud = (m_latchedTopics || m_pointCloudPub.getNumSubscribers() > 0);
@@ -690,7 +958,7 @@ void OctomapServer::publishAll(const ros::Time& rostime){
 
     m_fmarkerPub.publish(freeNodesVis);
   }
-
+ 
 
   // finish pointcloud:
   if (publishPointCloud){
@@ -710,6 +978,7 @@ void OctomapServer::publishAll(const ros::Time& rostime){
 
   double total_elapsed = (ros::WallTime::now() - startTime).toSec();
   ROS_DEBUG("Map publishing in OctomapServer took %f sec", total_elapsed);
+ 
 }
 
 bool OctomapServer::octomapBinarySrv(OctomapSrv::Request  &req,

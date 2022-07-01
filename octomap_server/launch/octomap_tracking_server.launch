@@ -1,3 +1,4 @@
+<?ignore
 <launch>
 
   <arg name="path" default=""/>
@@ -16,4 +17,39 @@
     <param name="min_change_pub" value="0" />
 		<!--remap from="cloud_in" to="/rgbdslam/batch_clouds" /-->
 	</node>
+</launch>
+?>
+<launch>
+    <rosparam command="load" file="$(find octomap_server)/cfg/common/camera2.yaml" />
+    <!--<param name="octomap_frame" type="string" value="map" />-->
+	<param name="octomap_frame" type="string" value="world_ned" />
+    <param name="octomap_resolution" type="double" value="0.05" />
+    <param name="max_range" type="double" value="5.0" />
+  	<arg name="path" default=""/>
+ 	<arg name="changeIdFrame" default="/talker/changes"/>
+
+	<!-- you can load an exisiting tree with <node ... args="tree.bt"> !-->
+	<node pkg="octomap_server" type="octomap_tracking_server_node" name="octomap_talker" output="screen" args="$(arg path)">
+		<param name="resolution" value="0.05" />
+		<!--<param name="frame_id" type="string" value="map" />!-->
+		<param name="octomap_frame" type="string" value="world_ned" />
+		<param name="sensor_model/max_range" value="10" />
+		
+	<!--	<remap from="cloud_in" to="zed2i/zed_node/point_cloud/cloud_registered" />-->
+	<remap from="cloud_in" to="/frontr200/camera/depth_registered/points" />
+	</node>
+	<node pkg="octomap_server" type="octomap_eraser_cli.py" name="octomap_eraser_cli" />
+	<!-- <node pkg="octomap_server" type="oclust_aserver.py" name="oclust_aserver" /> -->
+
+	<!-- <node pkg="octomap_server" type="uuv_octomap.py" name="uuv_octomap" />  -->
+	<include file="$(find vanttec_uuv)/launch/uuv_actionservers.launch">
+    </include>
+<?ignore
+		<param name="save_directory" value="$(optenv OCTOMAP_SAVE_DIR ./)" />
+		<param name="track_changes" value="false"/>
+		<param name="listen_changes" value="true"/>
+		<param name="topic_changes" value="/octomap_tracking_server/changeset" />
+    <param name="change_id_frame" value="$(arg changeIdFrame)" />
+    <param name="min_change_pub" value="0" />
+?>
 </launch>

@@ -1,0 +1,8 @@
+# Define the goal
+uint32 oclust_control  # Specify which dishwasher we want to use
+---
+# Define the result
+uint32 oclust_clustered
+---
+# Define a feedback message
+float32 oclust_feed

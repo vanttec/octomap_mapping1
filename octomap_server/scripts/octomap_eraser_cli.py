@@ -12,20 +12,40 @@ import roslib
 roslib.load_manifest('octomap_server')
 from geometry_msgs.msg import Point
 import octomap_msgs.srv
+from std_msgs.msg import String
+from std_srvs.srv import Empty
 import rospy
 
 
-SRV_NAME = '/octomap_server/clear_bbx'
-SRV_INTERFACE = octomap_msgs.srv.BoundingBoxQuery
+#SRV_NAME = '/octomap_talker/clear_bbx'
+SRV_NAME = '/octomap_talker/reset'
 
-
-if __name__ == '__main__':
-    min = Point(*[float(x) for x in sys.argv[1:4]])
-    max = Point(*[float(x) for x in sys.argv[4:7]])
-
-    rospy.init_node('octomap_eraser_cli', anonymous=True)
-    sleep(1)
-    service = rospy.ServiceProxy(SRV_NAME, SRV_INTERFACE)
-    rospy.loginfo("Connected to %s service." % SRV_NAME)
+#SRV_INTERFACE = octomap_msgs.srv.BoundingBoxQuery
+class OctomapErase:
+    def __init__(self):
+        rospy.Subscriber("/erasemap",String,self.erase_callback)
+        self.erase=""
+    def erase_callback(self,msg):
+        self.erase = msg.data
     
-    service(min, max)
+    def main(self):
+        if self.erase=='Activate' :
+            service = rospy.ServiceProxy(SRV_NAME, Empty)
+            service()
+
+def main():
+    rospy.init_node("octomap_control", anonymous=False)
+    rate = rospy.Rate(20)
+    octomapcontrol = OctomapErase()
+    while not rospy.is_shutdown():
+        octomapcontrol.main()
+        rate.sleep()
+    rospy.spin()
+
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except rospy.ROSInterruptException:     
+        pass

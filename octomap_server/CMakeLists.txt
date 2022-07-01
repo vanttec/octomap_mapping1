@@ -14,6 +14,7 @@ set(PACKAGE_DEPENDENCIES
   octomap_msgs
   dynamic_reconfigure
   nodelet
+  actionlib_msgs
 )
 
 find_package(catkin REQUIRED COMPONENTS ${PACKAGE_DEPENDENCIES})
@@ -29,16 +30,36 @@ include_directories(
 
 generate_dynamic_reconfigure_options(cfg/OctomapServer.cfg)
 
+
+set(LINK_LIBS
+  ${OCTOMAP_LIBRARIES}
+  ${catkin_LIBRARIES}
+)
+add_message_files(
+   FILES
+   point_detected_list.msg
+   points_list.msg
+   point_detected.msg
+
+ )
+
+ add_action_files(
+   FILES oclust.action
+
+ )
+ ## Generate added messages and services with any dependencies listed here
+generate_messages(
+  DEPENDENCIES
+  sensor_msgs
+  geometry_msgs
+  std_msgs
+  actionlib_msgs
+)
 catkin_package(
   INCLUDE_DIRS include
   LIBRARIES ${PROJECT_NAME}
   CATKIN_DEPENDS ${PACKAGE_DEPENDENCIES}
   DEPENDS OCTOMAP
-)
-
-set(LINK_LIBS
-  ${OCTOMAP_LIBRARIES}
-  ${catkin_LIBRARIES}
 )
 
 add_library(${PROJECT_NAME} src/OctomapServer.cpp src/OctomapServerMultilayer.cpp src/TrackingOctomapServer.cpp)
@@ -67,6 +88,11 @@ target_link_libraries(octomap_saver ${PROJECT_NAME} ${LINK_LIBS})
 
 add_executable(octomap_tracking_server_node src/octomap_tracking_server_node.cpp)
 target_link_libraries(octomap_tracking_server_node ${PROJECT_NAME} ${LINK_LIBS})
+
+add_executable(transform_pointcloud src/transform_pointcloud.cpp)
+target_link_libraries(transform_pointcloud ${PROJECT_NAME} ${LINK_LIBS})
+
+
 
 # Nodelet
 add_library(octomap_server_nodelet src/octomap_server_nodelet.cpp)
